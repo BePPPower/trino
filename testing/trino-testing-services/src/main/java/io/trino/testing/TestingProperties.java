@@ -22,6 +22,9 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.Properties;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Strings.isNullOrEmpty;
+import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 public class TestingProperties
@@ -60,5 +63,12 @@ public class TestingProperties
     private static String getProjectProperty(String name)
     {
         return requireNonNull(properties.get().getProperty(name), name + " is null");
+    }
+
+    public static String requiredNonEmptySystemProperty(String propertyName)
+    {
+        String value = System.getProperty(propertyName);
+        checkArgument(!isNullOrEmpty(value), format("System property %s must be non-empty", propertyName));
+        return value;
     }
 }

@@ -24,6 +24,7 @@ import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.TestTable;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -41,6 +42,7 @@ import static io.trino.spi.connector.ConnectorMetadata.MODIFYING_ROWS_MESSAGE;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.TestingNames.randomNameSuffix;
+import static io.trino.testing.TestingProperties.requiredNonEmptySystemProperty;
 import static io.trino.testing.assertions.Assert.assertEventually;
 import static java.lang.String.format;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -63,7 +65,7 @@ public abstract class BaseBigQueryConnectorTest
     {
         this.bigQuerySqlExecutor = new BigQuerySqlExecutor();
         // Prerequisite: upload region.csv in resources directory to gs://{testing.gcp-storage-bucket}/tpch/tiny/region.csv
-        this.gcpStorageBucket = System.getProperty("testing.gcp-storage-bucket");
+        this.gcpStorageBucket = requiredNonEmptySystemProperty("testing.gcp-storage-bucket");
     }
 
     @Override
@@ -151,35 +153,6 @@ public abstract class BaseBigQueryConnectorTest
             else {
                 assertThat(query(query)).isNotFullyPushedDown(FilterNode.class);
             }
-        }
-    }
-
-    @Test
-    public void testCreateTableSupportedType()
-    {
-        testCreateTableSupportedType("boolean", "boolean");
-        testCreateTableSupportedType("tinyint", "bigint");
-        testCreateTableSupportedType("smallint", "bigint");
-        testCreateTableSupportedType("integer", "bigint");
-        testCreateTableSupportedType("bigint", "bigint");
-        testCreateTableSupportedType("double", "double");
-        testCreateTableSupportedType("decimal", "decimal(38,9)");
-        testCreateTableSupportedType("date", "date");
-        testCreateTableSupportedType("time with time zone", "time(6)");
-        testCreateTableSupportedType("timestamp(6)", "timestamp(6)");
-        testCreateTableSupportedType("timestamp(6) with time zone", "timestamp(6) with time zone");
-        testCreateTableSupportedType("varchar", "varchar");
-        testCreateTableSupportedType("varchar(65535)", "varchar");
-        testCreateTableSupportedType("varbinary", "varbinary");
-        testCreateTableSupportedType("array(bigint)", "array(bigint)");
-        testCreateTableSupportedType("row(x bigint, y double)", "row(x bigint, y double)");
-        testCreateTableSupportedType("row(x array(bigint))", "row(x array(bigint))");
-    }
-
-    private void testCreateTableSupportedType(String createType, String expectedType)
-    {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_table_supported_type_" + createType.replaceAll("[^a-zA-Z0-9]", ""), format("(col1 %s)", createType))) {
-            assertThat(computeScalar("SELECT data_type FROM information_schema.columns WHERE table_name = '" + table.getName() + "' AND column_name = 'col1'")).isEqualTo(expectedType);
         }
     }
 
@@ -349,25 +322,44 @@ public abstract class BaseBigQueryConnectorTest
         return Optional.of(dataMappingTestSetup);
     }
 
-    @Test
-    @Override
-    public void testNoDataSystemTable()
-    {
-        // TODO (https://github.com/trinodb/trino/issues/6515): Big Query throws an error when trying to read "some_table$data".
-        assertThatThrownBy(super::testNoDataSystemTable)
-                .hasMessageFindingMatch("\\Q" +
-                        "Expecting message:\n" +
-                        "  \"Cannot read partition information from a table that is not partitioned: \\E\\S+\\Q:tpch.nation$data\"\n" +
-                        "to match regex:\n" +
-                        "  \"line 1:1: Table '\\w+.\\w+.\"nation\\$data\"' does not exist\"\n" +
-                        "but did not.");
-        abort("TODO");
-    }
-
     @Override
     protected boolean isColumnNameRejected(Exception exception, String columnName, boolean delimited)
     {
         return nullToEmpty(exception.getMessage()).matches(".*Invalid field name \"%s\". Fields must contain the allowed characters, and be at most 300 characters long..*".formatted(columnName.replace("\\", "\\\\")));
+    }
+
+    @Test // TODO: Move this test to BaseConnectorTest
+    public void testStreamCommentTableSpecialCharacter()
+    {
+        String schemaName = "test_comment" + randomNameSuffix();
+        assertUpdate("CREATE SCHEMA " + schemaName);
+        try {
+            assertUpdate("CREATE TABLE " + schemaName + ".test_comment_semicolon (a integer) COMMENT " + varcharLiteral("a;semicolon"));
+            assertUpdate("CREATE TABLE " + schemaName + ".test_comment_at (a integer) COMMENT " + varcharLiteral("an@at"));
+            assertUpdate("CREATE TABLE " + schemaName + ".test_comment_quote (a integer) COMMENT " + varcharLiteral("a\"quote"));
+            assertUpdate("CREATE TABLE " + schemaName + ".test_comment_apostrophe (a integer) COMMENT " + varcharLiteral("an'apostrophe"));
+            assertUpdate("CREATE TABLE " + schemaName + ".test_comment_backtick (a integer) COMMENT " + varcharLiteral("a`backtick`"));
+            assertUpdate("CREATE TABLE " + schemaName + ".test_comment_slash (a integer) COMMENT " + varcharLiteral("a/slash"));
+            assertUpdate("CREATE TABLE " + schemaName + ".test_comment_backslash (a integer) COMMENT " + varcharLiteral("a\\backslash"));
+            assertUpdate("CREATE TABLE " + schemaName + ".test_comment_question (a integer) COMMENT " + varcharLiteral("a?question"));
+            assertUpdate("CREATE TABLE " + schemaName + ".test_comment_bracket (a integer) COMMENT " + varcharLiteral("[square bracket]"));
+
+            assertQuery(
+                    "SELECT table_name, comment FROM system.metadata.table_comments WHERE catalog_name = 'bigquery' AND schema_name = '" + schemaName + "'",
+                    "VALUES " +
+                            "('test_comment_semicolon', " + varcharLiteral("a;semicolon") + ")," +
+                            "('test_comment_at', " + varcharLiteral("an@at") + ")," +
+                            "('test_comment_quote', " + varcharLiteral("a\"quote") + ")," +
+                            "('test_comment_apostrophe', " + varcharLiteral("an'apostrophe") + ")," +
+                            "('test_comment_backtick', " + varcharLiteral("a`backtick`") + ")," +
+                            "('test_comment_slash', " + varcharLiteral("a/slash") + ")," +
+                            "('test_comment_backslash', " + varcharLiteral("a\\backslash") + ")," +
+                            "('test_comment_question', " + varcharLiteral("a?question") + ")," +
+                            "('test_comment_bracket', " + varcharLiteral("[square bracket]") + ")");
+        }
+        finally {
+            assertUpdate("DROP SCHEMA " + schemaName + " CASCADE");
+        }
     }
 
     @Test
@@ -596,6 +588,26 @@ public abstract class BaseBigQueryConnectorTest
         onBigQuery(format("DROP VIEW %s.%s", schemaName, viewName));
     }
 
+    @Test // regression test for https://github.com/trinodb/trino/issues/20627
+    public void testPredicatePushdownOnView()
+    {
+        String tableName = "test_predeicate_pushdown_table_" + randomNameSuffix();
+        String viewName = "test_predeicate_pushdown_view_" + randomNameSuffix();
+
+        onBigQuery("CREATE TABLE test." + tableName + " AS SELECT 1 a, 10 b");
+        onBigQuery("CREATE VIEW test." + viewName + " AS SELECT * FROM test." + tableName);
+        try {
+            assertQuery("SELECT * FROM test." + viewName + " WHERE a = 1", "VALUES (1, 10)");
+            assertQuery("SELECT a FROM test." + viewName + " WHERE a = 1", "VALUES 1");
+            assertQuery("SELECT a FROM test." + viewName + " WHERE b = 10", "VALUES 1");
+            assertQuery("SELECT b FROM test." + viewName + " WHERE a = 1", "VALUES 10");
+        }
+        finally {
+            onBigQuery("DROP TABLE test." + tableName);
+            onBigQuery("DROP VIEW test." + viewName);
+        }
+    }
+
     @Test
     @Override
     public void testShowCreateTable()
@@ -708,6 +720,7 @@ public abstract class BaseBigQueryConnectorTest
     {
         Function<String, Session> sessionWithToken = token -> Session.builder(getSession())
                 .setTraceToken(Optional.of(token))
+                .setCatalogSessionProperty("bigquery", "skip_view_materialization", "true")
                 .build();
 
         String materializedView = "test_query_label" + randomNameSuffix();
@@ -752,9 +765,11 @@ public abstract class BaseBigQueryConnectorTest
     {
         Session queryResultsCacheSession = Session.builder(getSession())
                 .setCatalogSessionProperty("bigquery", "query_results_cache_enabled", "true")
+                .setCatalogSessionProperty("bigquery", "skip_view_materialization", "true")
                 .build();
         Session createNeverDisposition = Session.builder(getSession())
                 .setCatalogSessionProperty("bigquery", "query_results_cache_enabled", "true")
+                .setCatalogSessionProperty("bigquery", "skip_view_materialization", "true")
                 .setCatalogSessionProperty("bigquery", "create_disposition_type", "create_never")
                 .build();
 
@@ -835,6 +850,13 @@ public abstract class BaseBigQueryConnectorTest
     protected OptionalInt maxSchemaNameLength()
     {
         return OptionalInt.of(1024);
+    }
+
+    @Override
+    @Test
+    public void testCreateSchemaWithLongName()
+    {
+        abort("Dropping schema with long name causes BigQuery to return code 500");
     }
 
     @Override
@@ -922,6 +944,16 @@ public abstract class BaseBigQueryConnectorTest
     {
         assertThat(query("SELECT region_name FROM TABLE(system.query(query => 'SELECT name AS region_name FROM tpch.region WHERE regionkey = 0'))"))
                 .matches("VALUES CAST('AFRICA' AS VARCHAR)");
+    }
+
+    @Test
+    public void testNativeQueryWithCount()
+    {
+        assertThat(query("SELECT COUNT(*) FROM TABLE(bigquery.system.query(query => 'SELECT 1'))"))
+                .matches("VALUES BIGINT '1'");
+
+        assertThat(query("SELECT COUNT(*) FROM TABLE(bigquery.system.query(query => 'SELECT * FROM tpch.nation'))"))
+                .matches("VALUES BIGINT '25'");
     }
 
     @Test
@@ -1058,6 +1090,14 @@ public abstract class BaseBigQueryConnectorTest
     {
         assertThatThrownBy(super::testCharVarcharComparison)
                 .hasMessage("Unsupported column type: char(3)");
+    }
+
+    @Test
+    @Disabled
+    @Override
+    public void testSelectInformationSchemaColumns()
+    {
+        // TODO https://github.com/trinodb/trino/issues/20178 Enable this test after fixing the timeout issue
     }
 
     @Override

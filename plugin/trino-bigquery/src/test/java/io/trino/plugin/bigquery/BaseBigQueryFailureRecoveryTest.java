@@ -43,20 +43,19 @@ public abstract class BaseBigQueryFailureRecoveryTest
             Map<String, String> coordinatorProperties)
             throws Exception
     {
-        return BigQueryQueryRunner.createQueryRunner(
-                configProperties,
-                coordinatorProperties,
-                ImmutableMap.of(),
-                requiredTpchTables,
-                runner -> {
+        return BigQueryQueryRunner.builder()
+                .setExtraProperties(configProperties)
+                .setCoordinatorProperties(coordinatorProperties)
+                .setAdditionalSetup(runner -> {
                     runner.installPlugin(new FileSystemExchangePlugin());
                     runner.loadExchangeManager("filesystem", ImmutableMap.<String, String>builder()
                             .put("exchange.base-directories", System.getProperty("java.io.tmpdir") + "/trino-local-file-system-exchange-manager")
                             .buildOrThrow());
-                });
+                })
+                .setInitialTables(requiredTpchTables)
+                .build();
     }
 
-    @Test
     @Override
     protected boolean areWriteRetriesSupported()
     {
